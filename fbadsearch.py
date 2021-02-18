@@ -1,9 +1,13 @@
 import time
 import json
+import urllib.request
 from random import randint
 import logging
+
+import backoff
 import requests
 from more_itertools import chunked
+from requests import HTTPError
 from tqdm import tqdm
 import math
 
@@ -31,6 +35,7 @@ class FacebookAdSearch:
         self.api_version = api_version
         self.handle_rate_limits = handle_rate_limits
         self.next_page_url = resume_page_url
+        self.rate_limit_times_backed_off = 0
 
         if logger:
             self.logger = logger
@@ -53,7 +58,7 @@ class FacebookAdSearch:
         while self.next_page_url is not None:
             if first_query:
                 self.logger.debug(f'Fetching first search URL: {self.next_page_url}')
-                response = requests.get(self.next_page_url, params=self.params)
+                response = make_api_request_with_backoff(self.next_page_url, self.params)
             else:
                 self.logger.debug(f'Fetching URL: {self.next_page_url}')
                 response = requests.get(self.next_page_url)
@@ -81,19 +86,19 @@ class FacebookAdSearch:
 
             if self.handle_rate_limits:
                 time_wait, ratelimit_percentage = self.__class__.get_rate_limits_from_headers(response.headers)
-                if ratelimit_percentage > 95:  # if we are approaching the rate limit, start backing off exponentially
-                    if time_wait > 0:
-                        self.logger.info(f"Hit FB rate limit; backing off for {time_wait} seconds.")
-                        self.rate_limit_times_backed_off = 0
-                        time.sleep(time_wait)
-                    elif self.rate_limit_times_backed_off > 0:
-                        sleep_time = min(((2 ^ rate_limit_times_backed_off) + randint(1, 10)), MAXIMUM_BACKOFF)
-                        self.rate_limit_times_backed_off += 1
-                        self.logger.info(f"Approaching rate limit; backing off for {time_wait} seconds.")
-                        time.sleep(sleep_time)
-                    else:
-                        self.rate_limit_times_backed_off = 0
-                        self.logger.debug(f"Percentage of rate limit used: {ratelimit_percentage}.")
+                self.logger.debug(f"Percentage of rate limit used: {ratelimit_percentage}.")
+                if time_wait > 0:
+                    self.logger.info(f"Hit FB rate limit; backing off for {time_wait} seconds.")
+                    time.sleep(time_wait)
+                elif ratelimit_percentage > 95:  # if we are approaching the rate limit, start backing off exponentially
+                    sleep_time = min(((2 ^ rate_limit_times_backed_off) + randint(1, 10)), MAXIMUM_BACKOFF)
+                    self.rate_limit_times_backed_off += 1
+                    self.logger.info(f"Approaching rate limit; backing off for {time_wait} seconds.")
+                    time.sleep(sleep_time)
+                else: # normal operation again
+                    self.rate_limit_times_backed_off = 0
+
+
 
     def generate_ad_archives_resume(self, next_page_url=None):
         """
@@ -117,7 +122,16 @@ class FacebookAdSearch:
         except:  # This hasn't really been tested because we haven't come close to the rate limit.
             return 0, 0
 
+@backoff.on_exception(backoff.expo,
+                       HTTPError,
+                       max_tries=8)
+def make_api_request_with_backoff(self, url, params):
+    response = requests.get(url, params=params)
+    return response
 
+@backoff.on_exception(backoff.expo,
+                       urllib.error.HTTPError,
+                       max_tries=3)
 def save_data(gcs_client, bucket_name, filename, results):
     bucket = gcs_client.get_bucket(bucket_name)
     blob = bucket.blob(filename)
