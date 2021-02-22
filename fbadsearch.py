@@ -125,7 +125,7 @@ class FacebookAdSearch:
 @backoff.on_exception(backoff.expo,
                        HTTPError,
                        max_tries=8)
-def make_api_request_with_backoff(self, url, params):
+def make_api_request_with_backoff(url, params):
     response = requests.get(url, params=params)
     return response
 
