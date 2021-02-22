@@ -175,7 +175,10 @@ def fetch_and_save_ads(page_ids, access_token, config, gcs_client, gcs_bucket, g
             logger.error(f"Hit error: {e}")
         finally:
             if results:
+                logger.debug(f"Saving results before exit")
                 save_data(gcs_client, gcs_bucket, gcs_file_path, results)
+            else:
+                logger.debug(f"No results, exiting.")
             pbar.close()
 
     return True
